@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <sys/wait.h>
 
 /* CONSTANTS */
 #define READ        0
@@ -38,10 +39,13 @@ int main(int argc, char **argv, char **envp)
 {
     char *filters[] = {"printenv", "grep", "sort"}; /* a list containing the filters to be executed */
     char *pager;
-    int i, n = 3;
+    int i, n = 3, status;
+    pipe(pipes[0]);
+    pipe(pipes[1]);
+    pipe(pipes[2]);
 
-    for(i = 0; i < n; i++) {    
-        pipe(pipes[i]); /* Create a pipe at specified index in the pipe array */
+    for(i = 0; i < n; i++) {
+        //pipe(pipes[i]); /* Create a pipe at specified index in the pipe array */
 
         pid_t pid = fork(); /* Create new process */
 
@@ -52,18 +56,25 @@ int main(int argc, char **argv, char **envp)
         }
 
         if (pid == 0) { /* Code for child processes*/
-            prepare_write(i); /* set standard output to pipe */
 
             /* Special case for grep since grep takes arguments */
             if(strcmp(filters[i], "grep") == 0) {
                 if(argc > 1) { /* Any arguments? */
+                    prepare_write(i); /* set standard output to pipe */
                     execvp("grep", argv); /* execute grep with arguments */
 
                     /* if this is executed, execvp has failed */
                     perror("error");
                     _exit(EXIT_FAILURE);
                 }
+
+                exit(0);
             } else {
+                if(i == 0 && argc == 1) {
+                    prepare_write(i+1);
+                } else {
+                    prepare_write(i); /* set standard output to pipe */
+                }
                 /* Execute current filter, print error message and exit on error */
                 execlp(filters[i],filters[i],NULL);
 
@@ -71,9 +82,19 @@ int main(int argc, char **argv, char **envp)
                 perror("error");
                 _exit(EXIT_FAILURE);
             }
-        } else { /* Code for parent process */
-            prepare_read(i); /* set standard input pipe */
         }
+        /* Code for parent process */
+        waitpid(pid, &status, 0);
+
+        if(WIFEXITED(&status)) {
+            int child_status = WEXITSTATUS(status);
+            if(child_status != 0 || (child_status != 1 && strcmp(filters[i], "grep") == 0)) {
+                fprintf(stderr, "Process of id %ld failed with exit code %d\n", (long int) pid, child_status);
+                exit(0);
+            }
+        }
+        prepare_read(i); /* set standard input pipe */
+        
     }
 
     pager = getenv("PAGER"); /* Get the pager in the environment variable PAGER */
@@ -99,17 +120,14 @@ int main(int argc, char **argv, char **envp)
 void prepare_write(int pipe) {
     /* Close read end of pipe - only write enabled */
     if(close(pipes[pipe][READ]) < 0) {
-        perror("1error");
        _exit(EXIT_FAILURE);
     }
     /* Use pipe instead of standand output */
     if(dup2(pipes[pipe][WRITE], 1) < 0) {
-        perror("error");
        _exit(EXIT_FAILURE);
     }
     /* Close write end of pipe */
     if(close(pipes[pipe][WRITE]) < 0) {
-        perror("1error");
        _exit(EXIT_FAILURE);
     }
 }
